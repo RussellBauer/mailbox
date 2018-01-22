@@ -29,8 +29,9 @@
 //Write -> MC    => Seq: 0x6C NetFn/CMD cs-oem    SC_BMC_SET_SENSOR_INFO                                   :[C4 CC 20 6C 15 00 00 1B 1A FF FF 2C]
 //Write -> iDrac => Seq: 0x78 NetFn/CMD CS-OEM    SC_BMC_SET_CHASSIS_POWER_READINGS                        :[C0 20 70 78 2F 03 AB 02 55 00 02 FF FF FF E5]
 //Write -> MC    => Seq: 0x78 NetFn/CMD cs-oem    SC_BMC_SET_CHASSIS_POWER_READINGS                        :[C4 CC 20 78 2F 00 39]
-//Write -> iDrac => Seq: 0xA4 NetFn/CMD Trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[30 B0 70 A4 02 01 03 00 00 E6]
-//Write -> MC    => Seq: 0xA4 NetFn/CMD trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[34 5C 20 A4 02 00 11 C0 A8 11 C1 EF]
+//Write -> iDrac => Seq: 0x08 NetFn/CMD CS-OEM    SC_BMC_GET_PROTOCOL_VERSION                              :[C0 20 70 08 2C 20 3C]
+//Write -> MC    => Seq: 0x08 NetFn/CMD cs-oem    SC_BMC_GET_PROTOCOL_VERSION                              :[C4 CC 20 08 2C 00 30 7C]
+
 
 void sig_term_handler(int signum, siginfo_t *info, void *ptr)
 {
@@ -72,23 +73,39 @@ int returnValue = 0;
 	 reqBuffer.reqPacket.reqDataPktSize = 0;	
 	 fptr = fopen(FILE_NAME,"rb");
 	 fseek(fptr, REQ_MAILBOX, SEEK_SET);
+#if 1
+	 fread(&mailBox, 1, 1, fptr);
+     fread(&reqBuffer.reqPacket.reqDataPktSize, 1, 1, fptr);
+	 if( reqBuffer.reqPacket.reqDataPktSize == 0 && mailBox != 0){
+		printf("skip\n");
+		goto waitOneMoreCycle;
+	 }
+#else
 	 mailBox = fgetc( fptr );
 	 reqBuffer.reqPacket.reqDataPktSize = fgetc( fptr );
+#endif
 	 if(mailBox != reqBuffer.reqPacket.lastMailBox){
 		reqBuffer.reqPacket.lastMailBox = mailBox;
 		if(mailBox != 0x00){
 	 		fseek(fptr, REQ_DATA, SEEK_SET);
 			reqBuffer.reqPacket.BMCi2cAddress = MYSLAVEADDRESS;
 			reqBuffer.reqPacket.BCi2cAddress = BCSLAVEADDRESS;
+#if 1
+			fread(&reqBuffer.reqPacket.netFunc_LUN, reqBuffer.reqPacket.reqDataPktSize,1 , fptr);
+#else
 			fgets(&reqBuffer.reqPacket.netFunc_LUN, MAILBOXDATASIZE , fptr);
+#endif
 	 		reqBuffer.reqPacket.reqDataPktSize++;	//+1 for adding in my slave address
 
+		}else{
+			reqBuffer.reqPacket.reqDataPktSize = 0;
 		}
 		returnValue = 1;
 	 }else{
 		returnValue = 0;
 	 }
 
+waitOneMoreCycle:
 	fclose(fptr);
 	return returnValue;
 }
@@ -110,8 +127,10 @@ int chksum = 0;
 	for(;x<length;x++){				//take up where we left off
 		chksum += buffer[x];
 	}
-   	if(chksum & 0xff)
+   	if(chksum & 0xff){
+		//printf("\nCheckSum %04x\n",chksum);
    		return 2;
+	}
 
    return 0;
 
@@ -214,42 +233,66 @@ return 0;
 
 }
 
-int processNicInfo(){
+int processNicInfo(int which){
 
 //Write -> iDrac => Seq: 0xA4 NetFn/CMD Trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[30 B0 70 A4 02 01 03 00 00 E6]
 //Write -> MC    => Seq: 0xA4 NetFn/CMD trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[34 5C 20 A4 02 00 11 C0 A8 11 C1 EF]
+//Write -> iDrac => Seq: 0x38 NetFn/CMD Trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[30 B0 70 38 02 01 05 00 00 50]
+//Write -> MC    => Seq: 0x38 NetFn/CMD trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[34 5C 20 38 02 00 11 10 98 36 B3 7C EC 9C]
+
 	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
 	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
 	ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
 	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
 	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
 	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
-	ackBuffer.ackPacket.completionCode = 0x00; 	
-	ackBuffer.ackPacket.payLoad[0] = 0xdc;
-	ackBuffer.ackPacket.payLoad[1] = 0x54;
-	ackBuffer.ackPacket.payLoad[2] = 0x00;
-	ackBuffer.ackPacket.payLoad[3] = 0x07;
-	ackBuffer.ackPacket.payLoad[4] = 0x00;
-	ackBuffer.ackPacket.payLoad[5] = 0x20;
-	ackBuffer.ackPacket.payLoad[6] = 0x01;
-	ackBuffer.ackPacket.payLoad[7] = 0x41;
-	ackBuffer.ackPacket.payLoad[8] = 0x00;
-	ackBuffer.ackPacket.payLoad[9] = 0xa1;
-	ackBuffer.ackPacket.payLoad[10] = 0xff;
-	ackBuffer.ackPacket.payLoad[11] = 0x41;
-	ackBuffer.ackPacket.payLoad[12] = 0x59;
-	ackBuffer.ackPacket.payLoad[13] = 0xe8;
-	ackBuffer.ackPacket.payLoad[14] = 0x03;
-	ackBuffer.ackPacket.payLoad[15] = 0x00;
-	ackBuffer.ackPacket.payLoad[16] = 0x00;
-	ackBuffer.ackPacket.payLoad[17] = 0x40;
-	ackBuffer.ackPacket.payLoad[18] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 22);	 
+	ackBuffer.ackPacket.completionCode = 0x00; 
+	if(which == IP_ADDRESS){
+		ackBuffer.ackPacket.payLoad[0] = 0x11;
+		ackBuffer.ackPacket.payLoad[1] = 0xc0;
+		ackBuffer.ackPacket.payLoad[2] = 0xa8;
+		ackBuffer.ackPacket.payLoad[3] = 0x11;
+		ackBuffer.ackPacket.payLoad[4] = 0xc1;
+		ackBuffer.ackPacket.payLoad[5] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 9);	 
+		ackBuffer.ackPacket.reqDataPktSize = 12;
+	}else{
+		ackBuffer.ackPacket.payLoad[0] = 0x11;
+		ackBuffer.ackPacket.payLoad[1] = 0x10;
+		ackBuffer.ackPacket.payLoad[2] = 0x98;
+		ackBuffer.ackPacket.payLoad[3] = 0x36;
+		ackBuffer.ackPacket.payLoad[4] = 0xb3;
+		ackBuffer.ackPacket.payLoad[5] = 0x7c;
+		ackBuffer.ackPacket.payLoad[6] = 0xec;
+		ackBuffer.ackPacket.payLoad[7] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 11);	 
+		ackBuffer.ackPacket.reqDataPktSize = 14;
 
-	ackBuffer.ackPacket.reqDataPktSize = 25;
-
+	}
 
 return 0;
 
+
+}
+
+int processSetPSUData(){
+
+	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
+	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
+	ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
+	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
+	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
+	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
+	ackBuffer.ackPacket.completionCode = 0x00;
+	ackBuffer.ackPacket.payLoad[0] = reqBuffer.reqPacket.payLoad[1];	//subcommend
+	ackBuffer.ackPacket.payLoad[1] = reqBuffer.reqPacket.payLoad[2];	//subcommand lenght
+	ackBuffer.ackPacket.payLoad[2] = 0x00;
+	ackBuffer.ackPacket.payLoad[3] = 0x00;
+	ackBuffer.ackPacket.payLoad[4] = 0x00;
+	 	
+	ackBuffer.ackPacket.payLoad[5] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 9);	 
+
+	ackBuffer.ackPacket.reqDataPktSize = 12;
+
+	return(0);
 
 }
 
@@ -270,28 +313,65 @@ int processNotSupported(){
 
 }
 
+int processCheckSumError(int area){
+//I can get away with this because I know they are talikg to me!
+
+	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
+	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
+	ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
+	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
+	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
+	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
+	ackBuffer.ackPacket.completionCode = 0xfe; 	
+	ackBuffer.ackPacket.payLoad[0] = area; 	
+	ackBuffer.ackPacket.payLoad[1] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 5);	 
+
+	ackBuffer.ackPacket.reqDataPktSize = 8;
+
+}
+
+
 
 int processNetFun_CMD(){
 
 int netFuncCmd = (reqBuffer.reqPacket.netFunc_LUN << 8) + reqBuffer.reqPacket.command;
 int returnVal = 1;
 
-	printf("\t\tprocessNetFun_CMD()\n");
+	//printf("\t\tprocessNetFun_CMD()\n");
 	switch(netFuncCmd){
 		case IPMI_CMD_GET_DEVICE_ID: 
-			printf("\t\t\tIPMI_CMD_GET_DEVICE_ID\n");
+			//printf("\t\t\tIPMI_CMD_GET_DEVICE_ID\n");
 			processGetID();
 		break;
 		case SC_BMC_GET_PWM:
-			printf("\t\t\tSC_BMC_GET_PWM\n");
+			//printf("\t\t\tSC_BMC_GET_PWM\n");
 			processGetPWM();
 		break;
 		case IPMI_DCMI_CMD_GET_POWER_READING:
-			printf("\t\t\tIPMI_DCMI_CMD_GET_POWER_READING\n");
+			//printf("\t\t\tIPMI_DCMI_CMD_GET_POWER_READING\n");
 			processGetPower();
+		break;
+		case IPMI_CMD_GET_LAN_CONFIG_PARA:
+			if( reqBuffer.reqPacket.payLoad[1] == IP_ADDRESS || reqBuffer.reqPacket.payLoad[1] ==  MAC_ADDRESS){
+				processNicInfo(reqBuffer.reqPacket.payLoad[1]);
+			}else{
+				printf("%02X Get Lan Command not supported yet\n",reqBuffer.reqPacket.payLoad[1]);
+				goto NOT_SUPPORTED;
+			}
+		break;
+		case BMCSubCommand:
+			//printf("\t\t\tBMCSubCommand\n");
+			if( reqBuffer.reqPacket.payLoad[1] == SetPSUDataForIBMGreyJoy){
+				//printf("\t\t\t\tSetPSUDataForIBMGreyJoy\n");
+				processSetPSUData();
+			}else{
+				printf("%02X Sub Command not supported yet\n",reqBuffer.reqPacket.payLoad[1]);
+				goto NOT_SUPPORTED;
+			}
 		break;
 		default:
 			printf("%04X not supported yet\n",netFuncCmd);
+NOT_SUPPORTED:
 			processNotSupported();
 			//this should load up an unsupport responce
 			returnVal = 0;
@@ -303,7 +383,7 @@ return returnVal = 1;
 int writeDataACK(){
 FILE *fptr;
 
-	 printf("\t\t\t\twriteDataACK()\n");
+	 //printf("\t\t\t\twriteDataACK()\n");
 	
 	 ackBuffer.ackPacket.lastMailBox = reqBuffer.reqPacket.lastMailBox;
 	 fptr = fopen(FILE_NAME,"rb+");
@@ -322,7 +402,7 @@ int finishHandShake(){
 
 FILE *fptr;
 
-	 printf("finishHandShake()\n");
+	 //printf("finishHandShake()\n");
 	 ackBuffer.ackPacket.lastMailBox = reqBuffer.reqPacket.lastMailBox;
 	 ackBuffer.ackPacket.reqDataPktSize = 0;
 	 fptr = fopen(FILE_NAME,"rb+");
@@ -365,6 +445,25 @@ FILE *fptr;
 	return 44;
 
 }
+int clearPacketAreas(){
+#if 0
+FILE *fptr;
+
+//this is for debug, might cause a file area to get hammered on the way in....
+	 fptr = fopen(FILE_NAME,"rb+");
+	 fseek(fptr, ACK_DATA,SEEK_SET);
+	 fwrite(ackBuffer.ackPacket.payLoad,1,sizeof(ackBuffer.ackPacket.payLoad),fptr);
+
+	 fseek(fptr, REQ_DATA,SEEK_SET);
+	 fwrite(reqBuffer.ackPacket.payLoad,1,sizeof(reqBuffer.ackPacket.payLoad),fptr);
+
+	  	
+	fclose(fptr);
+#endif
+	return 44;
+
+}
+
 
 
 
@@ -387,13 +486,19 @@ long sleepCount = 0;
     	while(1){			
     		if(checkMailBox()){
 				if(reqBuffer.reqPacket.lastMailBox != 0){
-					printf("\nPossible New Comamnd [%02x][%02x]\n\t",reqBuffer.reqPacket.lastMailBox,reqBuffer.reqPacket.reqDataPktSize);
-					for(x=0;x<reqBuffer.reqPacket.reqDataPktSize;x++){	
-						printf("%02X ",reqBuffer.buffer[2+x]);
+					//printf("\nPossible New Comamnd [%02x][%02x]\n\t",reqBuffer.reqPacket.lastMailBox,reqBuffer.reqPacket.reqDataPktSize);
+					for(x=0;x<reqBuffer.reqPacket.reqDataPktSize;x++){
+						if(!(x%16)){
+							//printf("\n");
+						}
+						//printf("%02X ",reqBuffer.buffer[2+x]);
 					}
-					printf("\n");
+					//printf("\n");
 					if(chkSumOK = validateComamndData(&reqBuffer.reqPacket.BMCi2cAddress, reqBuffer.reqPacket.reqDataPktSize)){
 						printf("reqBuffer checksum validation failed [%02x]\n",chkSumOK);
+						processCheckSumError(chkSumOK);
+						writeDataACK();
+
 						//this will then load up an error packer
 					}else{
 						//the command is packet checksums out OK, start processin the command
@@ -403,9 +508,10 @@ long sleepCount = 0;
 				   }
 
 				}else{
-					printf("Comamnd Complete Sequence [%02x][%02x]\n\t",reqBuffer.reqPacket.lastMailBox,reqBuffer.reqPacket.reqDataPktSize);
+					//printf("Comamnd Complete Sequence [%02x][%02x]\n\t",reqBuffer.reqPacket.lastMailBox,reqBuffer.reqPacket.reqDataPktSize);
 					finishHandShake();
-					printf("Task pid : %d\n",getpid());
+					clearPacketAreas();
+					//printf("Task pid : %d\n",getpid());
 				}
     		}
 			if((sleepCount % 200) == 0)	//??? 20 didn't do it, the sleep may not be very calibrated hit the headbeat once a second
@@ -415,7 +521,7 @@ long sleepCount = 0;
 			sleepCount++;
     	}
     }else{
-		printf("Let the parrent die....\n");
+		//printf("Let the parrent die....\n");
     }	
 }
 
