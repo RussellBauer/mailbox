@@ -61,3 +61,12 @@ union REQ_PACKET ackBuffer;
 #define IPMI_CMD_GET_DEVICE_ID			 	0x1801
 #define SC_BMC_GET_PWM 						0xc08c
 #define IPMI_DCMI_CMD_GET_POWER_READING 	0xb002
+#define IPMI_CMD_GET_LAN_CONFIG_PARA        0x3002
+#define IP_ADDRESS							0x03
+#define MAC_ADDRESS							0x05
+#define BMCSubCommand						0x30c8
+#define SetPSUDataForIBMGreyJoy				0x13
+#define SC_BMC_GET_PROTOCOL_VERSION			0x302C
+#define SC_BMC_SET_SENSOR_INFO				0x3015
+#define SC_BMC_SET_CHASSIS_POWER_READINGS  	0x302f 
+

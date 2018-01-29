@@ -3,6 +3,8 @@ EXE_OBJS  = $(EXE).o
 
 CPPFLAGS  += -g -fpic -Wall -std=c++11
 
+LDFLAGS += `pkg-config --cflags --libs libsystemd`
+
 all: $(EXE)
 
 %.o : %.c 

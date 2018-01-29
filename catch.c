@@ -4,9 +4,18 @@
 
 #include <signal.h>
 #include <unistd.h>
+#include <systemd/sd-bus.h>
+
+//for network stuff
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <ifaddrs.h>
+
 
 #include "catch.h"
 
+int processFailure(char);
 
 //here's the plan....
 //open up the file and look to see if we have a mailbox request (REQ_MAILBOX)
@@ -25,12 +34,18 @@
 
 
 //commands to do
-//Write -> iDrac => Seq: 0x6C NetFn/CMD CS-OEM    SC_BMC_SET_SENSOR_INFO                                   :[C0 20 70 6C 15 20 FE 2A 00 17 00 00 00 00 00 07 00 EC 00 E4 00 DB 00 00 00 00 00 00 00 00 00 00 00 03 02 00 00 08 55 56 56 56 55 56 55 56 55 55 55 56 EF]
-//Write -> MC    => Seq: 0x6C NetFn/CMD cs-oem    SC_BMC_SET_SENSOR_INFO                                   :[C4 CC 20 6C 15 00 00 1B 1A FF FF 2C]
+//commandName["302F"] = "CS-OEM    SC_BMC_SET_CHASSIS_POWER_READINGS                       "
 //Write -> iDrac => Seq: 0x78 NetFn/CMD CS-OEM    SC_BMC_SET_CHASSIS_POWER_READINGS                        :[C0 20 70 78 2F 03 AB 02 55 00 02 FF FF FF E5]
 //Write -> MC    => Seq: 0x78 NetFn/CMD cs-oem    SC_BMC_SET_CHASSIS_POWER_READINGS                        :[C4 CC 20 78 2F 00 39]
-//Write -> iDrac => Seq: 0xA4 NetFn/CMD Trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[30 B0 70 A4 02 01 03 00 00 E6]
-//Write -> MC    => Seq: 0xA4 NetFn/CMD trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[34 5C 20 A4 02 00 11 C0 A8 11 C1 EF]
+
+
+
+
+
+
+
+
+
 
 void sig_term_handler(int signum, siginfo_t *info, void *ptr)
 {
@@ -72,23 +87,39 @@ int returnValue = 0;
 	 reqBuffer.reqPacket.reqDataPktSize = 0;	
 	 fptr = fopen(FILE_NAME,"rb");
 	 fseek(fptr, REQ_MAILBOX, SEEK_SET);
+#if 1
+	 fread(&mailBox, 1, 1, fptr);
+     fread(&reqBuffer.reqPacket.reqDataPktSize, 1, 1, fptr);
+	 if( reqBuffer.reqPacket.reqDataPktSize == 0 && mailBox != 0){
+		printf("skip\n");
+		goto waitOneMoreCycle;
+	 }
+#else
 	 mailBox = fgetc( fptr );
 	 reqBuffer.reqPacket.reqDataPktSize = fgetc( fptr );
+#endif
 	 if(mailBox != reqBuffer.reqPacket.lastMailBox){
 		reqBuffer.reqPacket.lastMailBox = mailBox;
 		if(mailBox != 0x00){
 	 		fseek(fptr, REQ_DATA, SEEK_SET);
 			reqBuffer.reqPacket.BMCi2cAddress = MYSLAVEADDRESS;
 			reqBuffer.reqPacket.BCi2cAddress = BCSLAVEADDRESS;
+#if 1
+			fread(&reqBuffer.reqPacket.netFunc_LUN, reqBuffer.reqPacket.reqDataPktSize,1 , fptr);
+#else
 			fgets(&reqBuffer.reqPacket.netFunc_LUN, MAILBOXDATASIZE , fptr);
+#endif
 	 		reqBuffer.reqPacket.reqDataPktSize++;	//+1 for adding in my slave address
 
+		}else{
+			reqBuffer.reqPacket.reqDataPktSize = 0;
 		}
 		returnValue = 1;
 	 }else{
 		returnValue = 0;
 	 }
 
+waitOneMoreCycle:
 	fclose(fptr);
 	return returnValue;
 }
@@ -110,11 +141,85 @@ int chksum = 0;
 	for(;x<length;x++){				//take up where we left off
 		chksum += buffer[x];
 	}
-   	if(chksum & 0xff)
+   	if(chksum & 0xff){
+		//printf("\nCheckSum %04x\n",chksum);
    		return 2;
+	}
 
    return 0;
 
+																					   
+}
+
+//commandName["302F"] = "CS-OEM    SC_BMC_SET_CHASSIS_POWER_READINGS                       "
+//Write -> iDrac => Seq: 0x78 NetFn/CMD CS-OEM    SC_BMC_SET_CHASSIS_POWER_READINGS                        :[C0 20 70 78 2F 03 AB 02 55 00 02 FF FF FF E5]
+//Write -> MC    => Seq: 0x78 NetFn/CMD cs-oem    SC_BMC_SET_CHASSIS_POWER_READINGS                        :[C4 CC 20 78 2F 00 39]
+int processSC_BMC_SET_CHASSIS_POWER_READINGS (){
+
+	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
+	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
+	ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
+	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
+	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
+	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
+	ackBuffer.ackPacket.completionCode = 0x00; 	
+	ackBuffer.ackPacket.payLoad[0] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 4);	 
+
+	ackBuffer.ackPacket.reqDataPktSize = 7;
+
+
+return 0;
+}
+
+
+
+//commandName["3015"] = "CS-OEM    SC_BMC_SET_SENSOR_INFO                                  "
+//Write -> iDrac => Seq: 0x6C NetFn/CMD CS-OEM    SC_BMC_SET_SENSOR_INFO                                   :[C0 20 70 6C 15 20 FE 2A 00 17 00 00 00 00 00 07 00 EC 00 E4 00 DB 00 00 00 00 00 00 00 00 00 00 00 03 02 00 00 08 55 56 56 56 55 56 55 56 55 55 55 56 EF]
+//Write -> MC    => Seq: 0x6C NetFn/CMD cs-oem    SC_BMC_SET_SENSOR_INFO                                   :[C4 CC 20 6C 15 00 00 1B 1A FF FF 2C]
+int processSC_BMC_SET_SENSOR_INFO(){
+
+	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
+	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
+	ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
+	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
+	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
+	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
+	ackBuffer.ackPacket.completionCode = 0x00; 	
+	ackBuffer.ackPacket.payLoad[0] = 0x00;
+	ackBuffer.ackPacket.payLoad[1] = 0x1b;
+	ackBuffer.ackPacket.payLoad[2] = 0x1a;
+	ackBuffer.ackPacket.payLoad[3] = 0xff;
+	ackBuffer.ackPacket.payLoad[4] = 0xff;
+	ackBuffer.ackPacket.payLoad[5] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 9);	 
+
+	ackBuffer.ackPacket.reqDataPktSize = 12;
+
+
+return 0;
+
+
+}
+
+//#define SC_BMC_GET_PROTOCOL_VERSION			0x302C
+//Write -> iDrac => Seq: 0x08 NetFn/CMD CS-OEM    SC_BMC_GET_PROTOCOL_VERSION                              :[C0 20 70 08 2C 20 3C]
+//Write -> MC    => Seq: 0x08 NetFn/CMD cs-oem    SC_BMC_GET_PROTOCOL_VERSION                              :[C4 CC 20 08 2C 00 30 7C]
+int processSC_BMC_GET_PROTOCOL_VERSION(){
+
+	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
+	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
+	ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
+	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
+	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
+	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
+	ackBuffer.ackPacket.completionCode = 0x00; 	
+	ackBuffer.ackPacket.payLoad[0] = 0x20;
+	ackBuffer.ackPacket.payLoad[1] = 0x30;
+	ackBuffer.ackPacket.payLoad[2] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 6);	 
+
+	ackBuffer.ackPacket.reqDataPktSize = 9;
+
+
+return 0;
 
 }
 
@@ -151,24 +256,78 @@ int processGetID(){
 return 0;
 }
 
+
+
+int readPwm(void) {
+        sd_bus_error error = SD_BUS_ERROR_NULL;
+        sd_bus_message *m = NULL;
+        sd_bus *bus = NULL;
+        const char *path;
+        int r;
+        uint64_t pwm;
+
+        /* Connect to the system bus */
+        r = sd_bus_open_system(&bus);
+        if (r < 0) {
+                fprintf(stderr, "Failed to connect to system bus: %s\n", strerror(-r));
+                goto finish;
+        }
+
+        /* Issue the property call and store the respons message in m */
+        r = sd_bus_get_property(bus,
+                                "xyz.openbmc_project.RRC",
+                                "/xyz/openbmc_project/sensors/temperature/final_pwm",
+                                "xyz.openbmc_project.Sensor.Value",
+                                "Value",
+                                NULL,
+                                &m,
+                                "x");
+        if (r < 0) {
+                fprintf(stderr, "Failed to connect to read: %s\n", strerror(-r));
+                goto finish;
+        }
+
+        /* Parse the response message */
+        r = sd_bus_message_read(m, "x", &pwm);
+
+        if (r < 0) {
+                fprintf(stderr, "Failed to parse response message: %s\n", strerror(-r));
+                goto finish;
+        }
+
+        printf("PWM is %d\n", (int) pwm);
+
+finish:
+        sd_bus_error_free(&error);
+        sd_bus_message_unref(m);
+        sd_bus_unref(bus);
+
+        return r < 0 ? 0xAA55 : (int) pwm;
+
+}
+
 int processGetPWM(){
 
+int pwmValue = readPwm();
 //Write -> iDrac => Seq: 0x70 NetFn/CMD CS-OEM    SC_BMC_GET_PWM                                           :[C0 20 70 70 8C 94]
 //Write -> MC    => Seq: 0x70 NetFn/CMD cs-oem    SC_BMC_GET_PWM                                           :[C4 CC 20 70 8C 00 39 00 AB]
-	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
-	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
-	ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
-	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
-	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
-	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
-	ackBuffer.ackPacket.completionCode = 0x00; 	
-	ackBuffer.ackPacket.payLoad[0] = 0x20;
-	ackBuffer.ackPacket.payLoad[1] = 0x39;
-	ackBuffer.ackPacket.payLoad[2] = 0x00;
-	ackBuffer.ackPacket.payLoad[3] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 7);	 
+	if(pwmValue == 0xaa55){
+		processFailure(0xcb); // Requested Sensor, data, or record not present
+	}else{	
+		ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
+		ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
+		ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
+		ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
+		ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
+		ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
+		ackBuffer.ackPacket.completionCode = 0x00; 	
+		ackBuffer.ackPacket.payLoad[0] = 0x20;
+		ackBuffer.ackPacket.payLoad[1] = readPwm();
+		ackBuffer.ackPacket.payLoad[2] = 0x00;
+		ackBuffer.ackPacket.payLoad[3] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 7);	 
 
-	ackBuffer.ackPacket.reqDataPktSize = 10;
-
+		ackBuffer.ackPacket.reqDataPktSize = 10;
+	}
 
 return 0;
 
@@ -213,49 +372,222 @@ return 0;
 
 
 }
+int readMAC(char *buffer) {
+        sd_bus_error error = SD_BUS_ERROR_NULL;
+        sd_bus_message *m = NULL;
+        sd_bus *bus = NULL;
+        const char *path;
+	char *ptr;	
+        int r;
+        const char *macAddress;
 
-int processNicInfo(){
+        /* Connect to the system bus */
+        r = sd_bus_open_system(&bus);
+        if (r < 0) {
+                printf("Failed to connect to system bus: %s\n", strerror(-r));
+                goto finish;
+        }
 
+
+       /* Issue the property call and store the respons message in m */
+        r = sd_bus_get_property(bus,
+                                "xyz.openbmc_project.Network",
+                                "/xyz/openbmc_project/network/eth0",
+                                "xyz.openbmc_project.Network.MACAddress",
+                                "MACAddress",
+                                NULL,
+                                &m,
+                                "s");
+        if (r < 0) {
+                printf("Failed to connect to read: %s\n", strerror(-r));
+                goto finish;
+        }
+
+        /* Parse the response message */
+        r = sd_bus_message_read(m, "s", &macAddress);
+
+        if (r < 0) {
+                printf("Failed to parse response message: %s\n", strerror(-r));
+                goto finish;
+        }
+
+        printf("MacAddress : <%s>\n",macAddress);
+	//strtol(const char *str, char **endptr, int base)    
+        buffer[0] = (char) strtol(macAddress, &ptr, 16);
+        buffer[1] = (char) strtol(ptr+1, &ptr, 16);
+        buffer[2] = (char) strtol(ptr+1, &ptr, 16);
+        buffer[3] = (char) strtol(ptr+1, &ptr, 16);
+        buffer[4] = (char) strtol(ptr+1, &ptr, 16);
+        buffer[5] = (char) strtol(ptr+1, &ptr, 16);
+
+
+finish:
+        sd_bus_error_free(&error);
+        sd_bus_message_unref(m);
+        sd_bus_unref(bus);
+
+        return 0 ;
+
+}
+
+
+#if 0
+//I would like to use the debus but don't know how to resolve the value "d0a64e9"
+//it is unique for each system 
+int readIpAddress(void) {
+        sd_bus_error error = SD_BUS_ERROR_NULL;
+        sd_bus_message *m = NULL;
+        sd_bus *bus = NULL;
+        const char *path;
+		char *ptr;	
+        int r;
+        const char *IpAddress;
+
+        /* Connect to the system bus */
+        r = sd_bus_open_system(&bus);
+        if (r < 0) {
+                printf("Failed to connect to system bus: %s\n", strerror(-r));
+                goto finish;
+        }
+
+
+       /* Issue the property call and store the respons message in m */
+        r = sd_bus_get_property(bus,
+                                "xyz.openbmc_project.Network",
+                                "/xyz/openbmc_project/network/eth0/ipv4/d0a64e9",
+                                "xyz.openbmc_project.Network.IP",
+                                "Address",
+                                NULL,
+                                &m,
+                                "s");
+        if (r < 0) {
+                printf("Failed to connect to read: %s\n", strerror(-r));
+                goto finish;
+        }
+
+        /* Parse the response message */
+        r = sd_bus_message_read(m, "s", &IpAddress);
+
+        if (r < 0) {
+                printf("Failed to parse response message: %s\n", strerror(-r));
+                goto finish;
+        }
+
+        printf("IpAddress is %s\n",IpAddress);
+	//strtol(const char *str, char **endptr, int base)    
+        r = strtol(IpAddress, &ptr, 10);
+		printf("r = %02X\n",r);
+
+        r = strtol(ptr+1, &ptr, 10);
+        printf("r = %02X\n",r);
+
+		r = strtol(ptr+1, &ptr, 10);
+        printf("r = %02X\n",r);
+
+        r = strtol(ptr+1, &ptr, 10);
+        printf("r = %02X\n",r);
+
+
+
+finish:
+        sd_bus_error_free(&error);
+        sd_bus_message_unref(m);
+        sd_bus_unref(bus);
+
+        return 0 ;
+
+}
+#else
+//fall back for now....
+int readIPAddress(char *buffer)
+{
+    struct ifaddrs *ifaddr, *ifa;
+    int family, s;
+    char host[NI_MAXHOST];
+    char *ptr;
+	
+    if (getifaddrs(&ifaddr) == -1) 
+    {
+        perror("getifaddrs");
+        return EXIT_FAILURE;
+    }
+
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) 
+    {
+        if (ifa->ifa_addr == NULL)
+            continue;  
+        s=getnameinfo(ifa->ifa_addr,sizeof(struct sockaddr_in),host, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+
+        if((strcmp(ifa->ifa_name,"eth0")==0)&&(ifa->ifa_addr->sa_family==AF_INET))
+        {
+	
+            if (s != 0)
+ 
+           {
+                printf("getnameinfo() failed: %s\n", gai_strerror(s));
+                return EXIT_FAILURE;
+            }
+            printf("Interface : <%s>\n",ifa->ifa_name );
+            printf("Address   : <%s>\n", host); 
+
+        buffer[0] = strtol(host, &ptr, 10);
+        buffer[1] = strtol(ptr+1, &ptr, 10);
+	buffer[2] = strtol(ptr+1, &ptr, 10);
+        buffer[3] = strtol(ptr+1, &ptr, 10);
+			
+        }
+    }
+
+    freeifaddrs(ifaddr);
+    return EXIT_SUCCESS;
+}
+ 
+#endif
+
+int processNicInfo(int which){
+
+char netAddress[6];
 //Write -> iDrac => Seq: 0xA4 NetFn/CMD Trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[30 B0 70 A4 02 01 03 00 00 E6]
 //Write -> MC    => Seq: 0xA4 NetFn/CMD trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[34 5C 20 A4 02 00 11 C0 A8 11 C1 EF]
+//Write -> iDrac => Seq: 0x38 NetFn/CMD Trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[30 B0 70 38 02 01 05 00 00 50]
+//Write -> MC    => Seq: 0x38 NetFn/CMD trans     IPMI_CMD_GET_LAN_CONFIG_PARA (5=MAC 3=IP)                :[34 5C 20 38 02 00 11 10 98 36 B3 7C EC 9C]
+
 	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
 	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
 	ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
 	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
 	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
 	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
-	ackBuffer.ackPacket.completionCode = 0x00; 	
-	ackBuffer.ackPacket.payLoad[0] = 0xdc;
-	ackBuffer.ackPacket.payLoad[1] = 0x54;
-	ackBuffer.ackPacket.payLoad[2] = 0x00;
-	ackBuffer.ackPacket.payLoad[3] = 0x07;
-	ackBuffer.ackPacket.payLoad[4] = 0x00;
-	ackBuffer.ackPacket.payLoad[5] = 0x20;
-	ackBuffer.ackPacket.payLoad[6] = 0x01;
-	ackBuffer.ackPacket.payLoad[7] = 0x41;
-	ackBuffer.ackPacket.payLoad[8] = 0x00;
-	ackBuffer.ackPacket.payLoad[9] = 0xa1;
-	ackBuffer.ackPacket.payLoad[10] = 0xff;
-	ackBuffer.ackPacket.payLoad[11] = 0x41;
-	ackBuffer.ackPacket.payLoad[12] = 0x59;
-	ackBuffer.ackPacket.payLoad[13] = 0xe8;
-	ackBuffer.ackPacket.payLoad[14] = 0x03;
-	ackBuffer.ackPacket.payLoad[15] = 0x00;
-	ackBuffer.ackPacket.payLoad[16] = 0x00;
-	ackBuffer.ackPacket.payLoad[17] = 0x40;
-	ackBuffer.ackPacket.payLoad[18] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 22);	 
+	ackBuffer.ackPacket.completionCode = 0x00; 
+	if(which == IP_ADDRESS){
+		readIPAddress(netAddress);
+		ackBuffer.ackPacket.payLoad[0] = 0x11;
+		ackBuffer.ackPacket.payLoad[1] = netAddress[0];		//0xc0;
+		ackBuffer.ackPacket.payLoad[2] = netAddress[1];		//0xa8;
+		ackBuffer.ackPacket.payLoad[3] = netAddress[2];		//0x11;
+		ackBuffer.ackPacket.payLoad[4] = netAddress[3];		//0xc1;
+		ackBuffer.ackPacket.payLoad[5] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 9);	 
+		ackBuffer.ackPacket.reqDataPktSize = 12;
+	}else{
+		readMAC(netAddress);
+		ackBuffer.ackPacket.payLoad[0] = 0x11;
+		ackBuffer.ackPacket.payLoad[1] = netAddress[0];		//0x10;
+		ackBuffer.ackPacket.payLoad[2] = netAddress[1];		//0x98;
+		ackBuffer.ackPacket.payLoad[3] = netAddress[2];		//0x36;
+		ackBuffer.ackPacket.payLoad[4] = netAddress[3];		//0xb3;
+		ackBuffer.ackPacket.payLoad[5] = netAddress[4];		//0x7c;
+		ackBuffer.ackPacket.payLoad[6] = netAddress[5];		//0xec;
+		ackBuffer.ackPacket.payLoad[7] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 11);	 
+		ackBuffer.ackPacket.reqDataPktSize = 14;
 
-	ackBuffer.ackPacket.reqDataPktSize = 25;
-
+	}
 
 return 0;
 
 
 }
 
-
-
-int processNotSupported(){
+int processSetPSUData(){
 
 	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
 	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
@@ -263,12 +595,55 @@ int processNotSupported(){
 	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
 	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
 	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
-	ackBuffer.ackPacket.completionCode = 0xc1; 	
+	ackBuffer.ackPacket.completionCode = 0x00;
+	ackBuffer.ackPacket.payLoad[0] = reqBuffer.reqPacket.payLoad[1];	//subcommend
+	ackBuffer.ackPacket.payLoad[1] = reqBuffer.reqPacket.payLoad[2];	//subcommand lenght
+	ackBuffer.ackPacket.payLoad[2] = 0x00;
+	ackBuffer.ackPacket.payLoad[3] = 0x00;
+	ackBuffer.ackPacket.payLoad[4] = 0x00;
+	 	
+	ackBuffer.ackPacket.payLoad[5] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 9);	 
+
+	ackBuffer.ackPacket.reqDataPktSize = 12;
+
+	return(0);
+
+}
+
+
+
+int processFailure(char failureCode){
+
+	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
+	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
+	ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
+	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
+	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
+	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
+	ackBuffer.ackPacket.completionCode = failureCode; 	
 	ackBuffer.ackPacket.payLoad[0] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 4);	 
 
 	ackBuffer.ackPacket.reqDataPktSize = 7;
 
 }
+
+int processCheckSumError(int area){
+//I can get away with this because I know they are talikg to me!
+
+	ackBuffer.ackPacket.BCi2cAddress= reqBuffer.reqPacket.BCi2cAddress;
+	ackBuffer.ackPacket.netFunc_LUN = reqBuffer.reqPacket.netFunc_LUN + 0x04; 		//turn into a reponce netFun 0x1c;
+	ackBuffer.ackPacket.headerCheckSum = (0x200 - ackBuffer.ackPacket.BCi2cAddress - ackBuffer.ackPacket.netFunc_LUN) & 0xff;
+	ackBuffer.ackPacket.BMCi2cAddress = MYSLAVEADDRESS;
+	ackBuffer.ackPacket.sequence = reqBuffer.reqPacket.sequence;
+	ackBuffer.ackPacket.command = reqBuffer.reqPacket.command;
+	ackBuffer.ackPacket.completionCode = 0xfe; 	
+	ackBuffer.ackPacket.payLoad[0] = area; 	
+	ackBuffer.ackPacket.payLoad[1] = checkSumData(&ackBuffer.ackPacket.BMCi2cAddress, 5);	 
+
+	ackBuffer.ackPacket.reqDataPktSize = 8;
+
+}
+
 
 
 int processNetFun_CMD(){
@@ -276,23 +651,48 @@ int processNetFun_CMD(){
 int netFuncCmd = (reqBuffer.reqPacket.netFunc_LUN << 8) + reqBuffer.reqPacket.command;
 int returnVal = 1;
 
-	printf("\t\tprocessNetFun_CMD()\n");
+	//printf("\t\tprocessNetFun_CMD()\n");
 	switch(netFuncCmd){
 		case IPMI_CMD_GET_DEVICE_ID: 
-			printf("\t\t\tIPMI_CMD_GET_DEVICE_ID\n");
+			//printf("\t\t\tIPMI_CMD_GET_DEVICE_ID\n");
 			processGetID();
 		break;
 		case SC_BMC_GET_PWM:
-			printf("\t\t\tSC_BMC_GET_PWM\n");
+			//printf("\t\t\tSC_BMC_GET_PWM\n");
 			processGetPWM();
 		break;
 		case IPMI_DCMI_CMD_GET_POWER_READING:
-			printf("\t\t\tIPMI_DCMI_CMD_GET_POWER_READING\n");
+			//printf("\t\t\tIPMI_DCMI_CMD_GET_POWER_READING\n");
 			processGetPower();
 		break;
+		case IPMI_CMD_GET_LAN_CONFIG_PARA:
+			if( reqBuffer.reqPacket.payLoad[1] == IP_ADDRESS || reqBuffer.reqPacket.payLoad[1] ==  MAC_ADDRESS){
+				processNicInfo(reqBuffer.reqPacket.payLoad[1]);
+			}else{
+				printf("%02X Get Lan Command not supported yet\n",reqBuffer.reqPacket.payLoad[1]);
+				goto NOT_SUPPORTED;
+			}
+		break;
+		case BMCSubCommand:
+			//printf("\t\t\tBMCSubCommand\n");
+			if( reqBuffer.reqPacket.payLoad[1] == SetPSUDataForIBMGreyJoy){
+				//printf("\t\t\t\tSetPSUDataForIBMGreyJoy\n");
+				processSetPSUData();
+			}else{
+				printf("%02X Sub Command not supported yet\n",reqBuffer.reqPacket.payLoad[1]);
+				goto NOT_SUPPORTED;
+			}
+		break;
+		case SC_BMC_GET_PROTOCOL_VERSION:
+			processSC_BMC_GET_PROTOCOL_VERSION();
+		break;	
+		case SC_BMC_SET_SENSOR_INFO:
+			processSC_BMC_SET_SENSOR_INFO();
+		break;	
 		default:
 			printf("%04X not supported yet\n",netFuncCmd);
-			processNotSupported();
+NOT_SUPPORTED:
+			processFailure(0xc1);	//not supported
 			//this should load up an unsupport responce
 			returnVal = 0;
 	}			 
@@ -303,7 +703,7 @@ return returnVal = 1;
 int writeDataACK(){
 FILE *fptr;
 
-	 printf("\t\t\t\twriteDataACK()\n");
+	 //printf("\t\t\t\twriteDataACK()\n");
 	
 	 ackBuffer.ackPacket.lastMailBox = reqBuffer.reqPacket.lastMailBox;
 	 fptr = fopen(FILE_NAME,"rb+");
@@ -322,7 +722,7 @@ int finishHandShake(){
 
 FILE *fptr;
 
-	 printf("finishHandShake()\n");
+	 //printf("finishHandShake()\n");
 	 ackBuffer.ackPacket.lastMailBox = reqBuffer.reqPacket.lastMailBox;
 	 ackBuffer.ackPacket.reqDataPktSize = 0;
 	 fptr = fopen(FILE_NAME,"rb+");
@@ -365,6 +765,25 @@ FILE *fptr;
 	return 44;
 
 }
+int clearPacketAreas(){
+#if 0
+FILE *fptr;
+
+//this is for debug, might cause a file area to get hammered on the way in....
+	 fptr = fopen(FILE_NAME,"rb+");
+	 fseek(fptr, ACK_DATA,SEEK_SET);
+	 fwrite(ackBuffer.ackPacket.payLoad,1,sizeof(ackBuffer.ackPacket.payLoad),fptr);
+
+	 fseek(fptr, REQ_DATA,SEEK_SET);
+	 fwrite(reqBuffer.ackPacket.payLoad,1,sizeof(reqBuffer.ackPacket.payLoad),fptr);
+
+	  	
+	fclose(fptr);
+#endif
+	return 44;
+
+}
+
 
 
 
@@ -387,13 +806,19 @@ long sleepCount = 0;
     	while(1){			
     		if(checkMailBox()){
 				if(reqBuffer.reqPacket.lastMailBox != 0){
-					printf("\nPossible New Comamnd [%02x][%02x]\n\t",reqBuffer.reqPacket.lastMailBox,reqBuffer.reqPacket.reqDataPktSize);
-					for(x=0;x<reqBuffer.reqPacket.reqDataPktSize;x++){	
-						printf("%02X ",reqBuffer.buffer[2+x]);
+					//printf("\nPossible New Comamnd [%02x][%02x]\n\t",reqBuffer.reqPacket.lastMailBox,reqBuffer.reqPacket.reqDataPktSize);
+					for(x=0;x<reqBuffer.reqPacket.reqDataPktSize;x++){
+						if(!(x%16)){
+							//printf("\n");
+						}
+						//printf("%02X ",reqBuffer.buffer[2+x]);
 					}
-					printf("\n");
+					//printf("\n");
 					if(chkSumOK = validateComamndData(&reqBuffer.reqPacket.BMCi2cAddress, reqBuffer.reqPacket.reqDataPktSize)){
 						printf("reqBuffer checksum validation failed [%02x]\n",chkSumOK);
+						processCheckSumError(chkSumOK);
+						writeDataACK();
+
 						//this will then load up an error packer
 					}else{
 						//the command is packet checksums out OK, start processin the command
@@ -403,9 +828,10 @@ long sleepCount = 0;
 				   }
 
 				}else{
-					printf("Comamnd Complete Sequence [%02x][%02x]\n\t",reqBuffer.reqPacket.lastMailBox,reqBuffer.reqPacket.reqDataPktSize);
+					//printf("Comamnd Complete Sequence [%02x][%02x]\n\t",reqBuffer.reqPacket.lastMailBox,reqBuffer.reqPacket.reqDataPktSize);
 					finishHandShake();
-					printf("Task pid : %d\n",getpid());
+					clearPacketAreas();
+					//printf("Task pid : %d\n",getpid());
 				}
     		}
 			if((sleepCount % 200) == 0)	//??? 20 didn't do it, the sleep may not be very calibrated hit the headbeat once a second
@@ -415,7 +841,7 @@ long sleepCount = 0;
 			sleepCount++;
     	}
     }else{
-		printf("Let the parrent die....\n");
+		//printf("Let the parrent die....\n");
     }	
 }
 
